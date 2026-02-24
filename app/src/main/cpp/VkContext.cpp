@@ -15,15 +15,25 @@ VkContext::VkContext(ANativeWindow *_window): window(_window) {
     create_swap_chain();
     create_render_pass();
     create_graphics_pipeline();
+    alloc_framebuffers();
+    create_command_pool();
+    alloc_command_buffers();
+    create_sync_objects();
 }
 
 VkContext::~VkContext() {
     vkDeviceWaitIdle(device);
+    vkDestroySemaphore(device, image_available_semaphore, nullptr);
+    vkDestroySemaphore(device, render_finished_semaphore, nullptr);
+    vkDestroyFence(device, in_flight_fence, nullptr);
+    vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+    vkDestroyCommandPool(device, command_pool, nullptr);
     vkDestroyPipeline(device, graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
     vkDestroyRenderPass(device, render_pass, nullptr);
-    for(VkImageView view: image_views) {
-        vkDestroyImageView(device, view, nullptr);
+    for(int i = 0; i < image_views.size(); ++i) {
+        vkDestroyFramebuffer(device, framebuffers[i], nullptr);
+        vkDestroyImageView(device, image_views[i], nullptr);
     }
     vkDestroySwapchainKHR(device, swap_chain, nullptr);
     vkDestroyDevice(device, nullptr);
@@ -72,7 +82,7 @@ bool VkContext::find_queue_families(VkPhysicalDevice gpu) {
         VkBool32 presentSupport = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(gpu, i, surface, &presentSupport);
         if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport) {
-            graphics_queue_index = i;
+            queue_index = i;
             return true;
         }
     }
@@ -163,7 +173,7 @@ void VkContext::create_logic_device() {
     VkDeviceQueueCreateInfo queueCreateInfo{};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queueCreateInfo.queueCount = 1;
-    queueCreateInfo.queueFamilyIndex = graphics_queue_index;
+    queueCreateInfo.queueFamilyIndex = queue_index;
     float priority = 1.0f;
     queueCreateInfo.pQueuePriorities = &priority;
 
@@ -186,13 +196,14 @@ void VkContext::create_logic_device() {
     if (vkCreateDevice(gpu, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
         __android_log_assert("", TAG, "Unable to create vkDevice!");
     }
+    vkGetDeviceQueue(device, queue_index, 0, &queue);
 }
 
 void VkContext::create_swap_chain() {
     /*Create swap chain*/
     const SwapChainFormat& format = choose_swap_chain_format();
     VkSwapchainCreateInfoKHR swapchainCreateInfo{};
-    swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_COUNTER_CREATE_INFO_EXT;
+    swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     swapchainCreateInfo.surface = surface;
     swapchainCreateInfo.presentMode = format.mode;
     swapchainCreateInfo.minImageCount = format.min_image_count;
@@ -256,7 +267,7 @@ void VkContext::attach_surface() {
 }
 
 void VkContext::create_graphics_pipeline() {
-    VkShaderModule vert_shader_module = create_shader_mode(simple_vert_spv, simple_frag_spv_len);
+    VkShaderModule vert_shader_module = create_shader_mode(simple_vert_spv, simple_vert_spv_len);
     VkShaderModule frag_shader_module = create_shader_mode(simple_frag_spv, simple_frag_spv_len);
 
     VkPipelineShaderStageCreateInfo vertShaderStageCreateInfo{};
@@ -424,14 +435,163 @@ void VkContext::create_render_pass() {
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentRef;
 
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = 1;
     renderPassInfo.pAttachments = &colorAttachment;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
 
     if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &render_pass) != VK_SUCCESS) {
         __android_log_assert("", TAG, "Unable to create vkRenderPass!");
     }
+}
+
+void VkContext::alloc_framebuffers() {
+    framebuffers.resize(image_views.size());
+    for (int i = 0; i < framebuffers.size(); ++i) {
+        VkImageView attachments[] = {
+                image_views[i]
+        };
+        VkFramebufferCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        createInfo.pAttachments = attachments;
+        createInfo.renderPass = render_pass;
+        createInfo.attachmentCount = 1;
+        createInfo.layers = 1;
+        createInfo.width = swap_chain_extent.width;
+        createInfo.height = swap_chain_extent.height;
+        if (vkCreateFramebuffer(device, &createInfo, nullptr, &framebuffers[i]) != VK_SUCCESS) {
+            __android_log_assert("", TAG, "Unable to create vkFramebuffer!");
+        }
+    }
+}
+
+void VkContext::create_command_pool() {
+    VkCommandPoolCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    createInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    createInfo.queueFamilyIndex = queue_index;
+    if (vkCreateCommandPool(device, &createInfo, nullptr, &command_pool) != VK_SUCCESS) {
+        __android_log_assert("", TAG, "Unable to create vkCommandPool!");
+    }
+}
+
+void VkContext::alloc_command_buffers() {
+    VkCommandBufferAllocateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    createInfo.commandPool = command_pool;
+    createInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    createInfo.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(device, &createInfo, &command_buffer) != VK_SUCCESS) {
+        __android_log_assert("", TAG, "Unable to create VkCommandBuffer!");
+    }
+}
+
+void VkContext::submit_command(uint32_t index) {
+    vkWaitForFences(device, 1, &in_flight_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &in_flight_fence);
+    vkResetCommandBuffer(command_buffer, 0);
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = 0; // Optional
+    beginInfo.pInheritanceInfo = nullptr; // Optional
+
+    if (vkBeginCommandBuffer(command_buffer, &beginInfo) != VK_SUCCESS) {
+        __android_log_assert("", TAG, "Unable to submit VkCommandBuffer!");
+    }
+
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = render_pass;
+    renderPassInfo.framebuffer = framebuffers[index];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = swap_chain_extent;
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearColor;
+    vkCmdBeginRenderPass(command_buffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(swap_chain_extent.width);
+    viewport.height = static_cast<float>(swap_chain_extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = swap_chain_extent;
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+    vkCmdEndRenderPass(command_buffer);
+    if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+        __android_log_assert("", TAG, "Failed to record command buffer!");
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore waitSemaphores[] = {image_available_semaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &command_buffer;
+    VkSemaphore signalSemaphores[] = {render_finished_semaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+    if (vkQueueSubmit(queue, 1, &submitInfo, in_flight_fence) != VK_SUCCESS) {
+        __android_log_assert("", TAG, "Failed to submit command buffer!");
+    }
+
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+
+    VkSwapchainKHR swapChains[] = {swap_chain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &index;
+    presentInfo.pResults = nullptr; // Optional
+    vkQueuePresentKHR(queue, &presentInfo);
+}
+
+void VkContext::create_sync_objects() {
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &image_available_semaphore) != VK_SUCCESS ||
+        vkCreateSemaphore(device, &semaphoreInfo, nullptr, &render_finished_semaphore) != VK_SUCCESS ||
+        vkCreateFence(device, &fenceInfo, nullptr, &in_flight_fence) != VK_SUCCESS) {
+        __android_log_assert("", TAG, "Failed to create semaphores!");
+    }
+}
+
+uint32_t VkContext::acquire_next_image() {
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_semaphore, VK_NULL_HANDLE, &imageIndex);
+    return imageIndex;
+}
+
+void VkContext::wait_idle() {
+    vkDeviceWaitIdle(device);
 }
