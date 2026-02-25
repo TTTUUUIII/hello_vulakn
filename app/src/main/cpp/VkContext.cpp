@@ -8,6 +8,17 @@
 
 static const char* TAG = "VkContext";
 
+static const float vertexes[] = {
+        -0.5f, -0.5f, 1.0f, 0.0f, 0.0f,
+        0.5f, -0.5f, 0.0f, 1.0f, 0.0f,
+        0.5f, 0.5f, 0.0f, 0.0f, 1.0f,
+        -0.5f, 0.5f, 1.0f, 1.0f, 1.0f
+};
+
+static const uint16_t indices[] = {
+        0, 1, 2, 2, 3, 0
+};
+
 VkContext::VkContext(ANativeWindow *_window): window(_window) {
     create_instance();
     attach_surface();
@@ -17,6 +28,7 @@ VkContext::VkContext(ANativeWindow *_window): window(_window) {
     create_graphics_pipeline();
     alloc_framebuffers();
     create_command_pool();
+    create_buffers();
     alloc_command_buffers();
     create_sync_objects();
 }
@@ -28,6 +40,10 @@ VkContext::~VkContext() {
     vkDestroyFence(device, in_flight_fence, nullptr);
     vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
     vkDestroyCommandPool(device, command_pool, nullptr);
+    vkDestroyBuffer(device, VBO, nullptr);
+    vkDestroyBuffer(device, EBO, nullptr);
+    vkFreeMemory(device, VBO_mem, nullptr);
+    vkFreeMemory(device, EBO_mem, nullptr);
     vkDestroyPipeline(device, graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
     vkDestroyRenderPass(device, render_pass, nullptr);
@@ -159,15 +175,15 @@ void VkContext::create_instance() {
     instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
 
     if (vkCreateInstance(&instanceCreateInfo, nullptr, &instance) != VK_SUCCESS) {
-        __android_log_assert("", TAG, "Unable to create vkInstance!");
+        throw std::runtime_error("Unable to create vkInstance!");
     }
 }
 
 void VkContext::create_logic_device() {
     /*Create logic device*/
-    VkPhysicalDevice gpu = find_gpu();
-    if (gpu == nullptr) {
-        __android_log_assert("gpu != nullptr", TAG, "GPU not found!");
+    GPU = find_gpu();
+    if (GPU == nullptr) {
+        throw std::runtime_error("GPU not found!");
     }
 
     VkDeviceQueueCreateInfo queueCreateInfo{};
@@ -193,8 +209,8 @@ void VkContext::create_logic_device() {
     deviceCreateInfo.ppEnabledLayerNames = enabledDeviceLayerNames.data();
     deviceCreateInfo.enabledExtensionCount = enabledDeviceExtensionNames.size();
     deviceCreateInfo.ppEnabledExtensionNames = enabledDeviceExtensionNames.data();
-    if (vkCreateDevice(gpu, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
-        __android_log_assert("", TAG, "Unable to create vkDevice!");
+    if (vkCreateDevice(GPU, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
+        throw std::runtime_error("Unable to create vkDevice!");
     }
     vkGetDeviceQueue(device, queue_index, 0, &queue);
 }
@@ -295,11 +311,29 @@ void VkContext::create_graphics_pipeline() {
     dynamicState.pDynamicStates = dynamicStates.data();
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    VkVertexInputBindingDescription bindingDescription{};
+
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(float) * 5;
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[0].offset = 0;
+
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[1].offset = sizeof(float) * 2;
+
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
-    vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = attributeDescriptions.size();
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data(); // Optional
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -374,7 +408,7 @@ void VkContext::create_graphics_pipeline() {
     pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
 
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipeline_layout) != VK_SUCCESS) {
-        __android_log_assert("", TAG, "Unable to create pipeline layout!");
+        throw std::runtime_error("Unable to create pipeline layout!");
     }
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
@@ -494,11 +528,26 @@ void VkContext::alloc_command_buffers() {
     createInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     createInfo.commandBufferCount = 1;
     if (vkAllocateCommandBuffers(device, &createInfo, &command_buffer) != VK_SUCCESS) {
-        __android_log_assert("", TAG, "Unable to create VkCommandBuffer!");
+        throw std::runtime_error("Unable to create VkCommandBuffer!");
     }
 }
 
-void VkContext::submit_command(uint32_t index) {
+void VkContext::create_sync_objects() {
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &image_available_semaphore) != VK_SUCCESS ||
+        vkCreateSemaphore(device, &semaphoreInfo, nullptr, &render_finished_semaphore) != VK_SUCCESS ||
+        vkCreateFence(device, &fenceInfo, nullptr, &in_flight_fence) != VK_SUCCESS) {
+        __android_log_assert("", TAG, "Failed to create semaphores!");
+    }
+}
+
+void VkContext::present() {
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_semaphore, VK_NULL_HANDLE, &imageIndex);
     vkWaitForFences(device, 1, &in_flight_fence, VK_TRUE, UINT64_MAX);
     vkResetFences(device, 1, &in_flight_fence);
     vkResetCommandBuffer(command_buffer, 0);
@@ -508,13 +557,13 @@ void VkContext::submit_command(uint32_t index) {
     beginInfo.pInheritanceInfo = nullptr; // Optional
 
     if (vkBeginCommandBuffer(command_buffer, &beginInfo) != VK_SUCCESS) {
-        __android_log_assert("", TAG, "Unable to submit VkCommandBuffer!");
+        throw std::runtime_error("Unable to submit VkCommandBuffer!");
     }
 
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = render_pass;
-    renderPassInfo.framebuffer = framebuffers[index];
+    renderPassInfo.framebuffer = framebuffers[imageIndex];
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = swap_chain_extent;
     VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
@@ -536,7 +585,13 @@ void VkContext::submit_command(uint32_t index) {
     scissor.offset = {0, 0};
     scissor.extent = swap_chain_extent;
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+    VkBuffer vertexBuffers[] = {VBO};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(command_buffer, 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(command_buffer, EBO, 0, VK_INDEX_TYPE_UINT16);
+
+    vkCmdDrawIndexed(command_buffer, 6, 1, 0, 0, 0);
     vkCmdEndRenderPass(command_buffer);
     if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
         __android_log_assert("", TAG, "Failed to record command buffer!");
@@ -556,7 +611,7 @@ void VkContext::submit_command(uint32_t index) {
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
     if (vkQueueSubmit(queue, 1, &submitInfo, in_flight_fence) != VK_SUCCESS) {
-        __android_log_assert("", TAG, "Failed to submit command buffer!");
+        std::runtime_error("Failed to submit command buffer!");
     }
 
     VkPresentInfoKHR presentInfo{};
@@ -568,30 +623,96 @@ void VkContext::submit_command(uint32_t index) {
     VkSwapchainKHR swapChains[] = {swap_chain};
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = swapChains;
-    presentInfo.pImageIndices = &index;
+    presentInfo.pImageIndices = &imageIndex;
     presentInfo.pResults = nullptr; // Optional
     vkQueuePresentKHR(queue, &presentInfo);
 }
 
-void VkContext::create_sync_objects() {
-    VkSemaphoreCreateInfo semaphoreInfo{};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &image_available_semaphore) != VK_SUCCESS ||
-        vkCreateSemaphore(device, &semaphoreInfo, nullptr, &render_finished_semaphore) != VK_SUCCESS ||
-        vkCreateFence(device, &fenceInfo, nullptr, &in_flight_fence) != VK_SUCCESS) {
-        __android_log_assert("", TAG, "Failed to create semaphores!");
+void VkContext::create_buffers() {
+    /*VAO*/
+    size_t buffer_size = std::max(sizeof(vertexes), sizeof(indices));
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+
+    void* data;
+    vkMapMemory(device, stagingBufferMemory, 0, buffer_size, 0, &data);
+    memcpy(data, vertexes, sizeof(vertexes));
+    create_buffer(sizeof(vertexes),  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VBO, VBO_mem);
+    copy_buffer(stagingBuffer, VBO, sizeof(vertexes));
+
+    /*EBO*/
+    create_buffer(sizeof(indices), VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, EBO, EBO_mem);
+    memcpy(data, indices, sizeof(indices));
+    vkUnmapMemory(device, stagingBufferMemory);
+    copy_buffer(stagingBuffer, EBO, sizeof(indices));
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingBufferMemory, nullptr);
+}
+
+void VkContext::copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = command_pool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    VkBufferCopy copyRegion{};
+    copyRegion.srcOffset = 0; // Optional
+    copyRegion.dstOffset = 0; // Optional
+    copyRegion.size = size;
+    vkCmdCopyBuffer(commandBuffer, src, dst, 1, &copyRegion);
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(queue);
+    vkFreeCommandBuffers(device, command_pool, 1, &commandBuffer);
+}
+
+void VkContext::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props, VkBuffer& buffer, VkDeviceMemory& buffer_mem) {
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = size;
+    bufferInfo.usage = usage;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create vertex buffer!");
     }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = find_mem_type(memRequirements.memoryTypeBits, props);
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &buffer_mem) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate vertex buffer memory!");
+    }
+    vkBindBufferMemory(device, buffer, buffer_mem, 0);
 }
 
-uint32_t VkContext::acquire_next_image() {
-    uint32_t imageIndex;
-    vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_semaphore, VK_NULL_HANDLE, &imageIndex);
-    return imageIndex;
-}
+uint32_t VkContext::find_mem_type(uint32_t type, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(GPU, &memProperties);
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if (type & (1 << i) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
 
-void VkContext::wait_idle() {
-    vkDeviceWaitIdle(device);
+    throw std::runtime_error("failed to find suitable memory type!");
 }

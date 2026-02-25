@@ -16,7 +16,6 @@ VkRenderer::VkRenderer(JNIEnv *env, jobject activity, jobject surface) {
 VkRenderer::~VkRenderer() = default;
 
 bool VkRenderer::request_start() {
-    LOGD(TAG, "request_start %d", state.load());
     if (state != renderer_state_t::PREPARED) return false;
     vk_thread = std::thread([this]() {
         vk_thread_running = true;
@@ -30,7 +29,6 @@ bool VkRenderer::request_start() {
                 break;
             }
         }
-        context->wait_idle();
         vk_thread_running.store(false);
         vk_thread_running.notify_one();
         LOGI(TAG, "VkThread exited, tid=%d", gettid());
@@ -62,6 +60,5 @@ void VkRenderer::release() {
 }
 
 void VkRenderer::on_draw() {
-    uint32_t index = context->acquire_next_image();
-    context->submit_command(index);
+    context->present();
 }

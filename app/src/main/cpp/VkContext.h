@@ -27,6 +27,7 @@ private:
     ANativeWindow* window;
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
+    VkPhysicalDevice GPU = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkSwapchainKHR swap_chain = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
@@ -41,6 +42,8 @@ private:
     VkSemaphore image_available_semaphore;
     VkSemaphore render_finished_semaphore;
     VkFence in_flight_fence;
+    VkBuffer VBO, EBO;
+    VkDeviceMemory VBO_mem, EBO_mem;
     SwapChainDetails swap_chain_details{};
     u_int32_t queue_index = 0;
     VkQueue queue;
@@ -60,12 +63,14 @@ private:
     void attach_surface();
     void create_render_pass();
     void create_sync_objects();
+    void create_buffers();
+    void create_buffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, VkBuffer&, VkDeviceMemory&);
+    void copy_buffer(VkBuffer /*src*/, VkBuffer /*dst*/, VkDeviceSize /*size*/);
+    uint32_t find_mem_type(uint32_t filter, VkMemoryPropertyFlags properties);
 public:
     explicit VkContext(ANativeWindow* _window);
     virtual ~VkContext();
-    void submit_command(uint32_t index);
-    uint32_t acquire_next_image();
-    void wait_idle();
+    void present();
 };
 
 
