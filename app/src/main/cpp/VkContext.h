@@ -40,6 +40,8 @@ private:
     VkCommandPool command_pool;
     VkDescriptorPool descriptor_pool;
     std::vector<VkDescriptorSet> descriptor_sets;
+    VkImageView texture_view;
+    VkSampler texture_sampler;
     std::vector<VkImageView> image_views;
     std::vector<VkFramebuffer> framebuffers;
     std::vector<VkCommandBuffer> command_buffers;
@@ -81,7 +83,12 @@ private:
     void create_buffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, VkBuffer&, VkDeviceMemory&);
     void copy_buffer(VkBuffer /*src*/, VkBuffer /*dst*/, VkDeviceSize /*size*/);
     void record_command_buffer(VkCommandBuffer /*buffer*/, u_int32_t /*image index*/);
+    void begin_single_time_commands(VkCommandBuffer&);
+    void end_single_time_commands(VkCommandBuffer);
     uint32_t find_mem_type(uint32_t filter, VkMemoryPropertyFlags properties);
+    void transition_layout(VkImage, VkFormat, VkImageLayout /*old_layout*/, VkImageLayout /*new_layout*/);
+    void copy_image_buffer(VkBuffer /*buffer*/, VkImage /*image*/, uint32_t /*width*/, uint32_t /*height*/);
+    void create_texture_sampler();
     void update_uniform_buffer();
 public:
     explicit VkContext(ANativeWindow* _window);
