@@ -9,91 +9,58 @@
 #include <vulkan/vulkan_android.h>
 #include <android/native_window_jni.h>
 
-struct SwapChainDetails {
+struct swap_chain_details_t {
     VkSurfaceCapabilitiesKHR capabilities;
     std::vector<VkSurfaceFormatKHR> formats;
     std::vector<VkPresentModeKHR> modes;
 };
 
-struct SwapChainFormat {
+struct swap_chain_format_t {
     VkSurfaceFormatKHR image_format;
     VkPresentModeKHR mode;
     VkExtent2D extent;
     u_int32_t min_image_count;
 };
 
+struct queue_info_t {
+    uint32_t index;
+    VkQueue queue;
+};
+
+enum class queue_type_t {
+    GRAPHICS,
+    PRESENT
+};
+
 class VkContext {
 private:
-    const int MAX_FRAMES_IN_FLIGHT = 2;
     ANativeWindow* window;
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    VkPhysicalDevice GPU = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
-    VkSwapchainKHR swap_chain = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE;
-    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline graphics_pipeline = VK_NULL_HANDLE;
-    VkExtent2D swap_chain_extent;
-    VkFormat swap_chain_format;
-    VkRenderPass render_pass;
-    VkCommandPool command_pool;
-    VkDescriptorPool descriptor_pool;
-    std::vector<VkDescriptorSet> descriptor_sets;
-    VkImageView texture_view;
-    VkSampler texture_sampler;
-    std::vector<VkImageView> image_views;
-    std::vector<VkFramebuffer> framebuffers;
-    std::vector<VkCommandBuffer> command_buffers;
-    std::vector<VkSemaphore> image_available_semaphores;
-    std::vector<VkSemaphore> render_finished_semaphores;
-    std::vector<VkFence> in_flight_fences;
-    uint32_t cur_frame = 0;
-    VkBuffer VBO, EBO;
-    VkDeviceMemory VBO_mem, EBO_mem;
-    VkImage texture_image;
-    VkDeviceMemory texture_image_mem;
-    std::vector<VkBuffer> UBOs;
-    std::vector<VkDeviceMemory> UBO_mems;
-    SwapChainDetails swap_chain_details{};
-    u_int32_t queue_index = 0;
-    VkQueue queue;
-    VkPhysicalDevice find_gpu();
+    VkDevice dev;
+    VkPhysicalDevice GPU;
+    VkSwapchainKHR swap_chain;
+    swap_chain_format_t swap_chain_format{};
+    swap_chain_details_t swap_chain_details{};
+    queue_info_t graphics_queue_info{};
+    queue_info_t present_queue_info{};
+    VkPhysicalDevice find_GPU();
     bool is_suitable(VkPhysicalDevice gpu);
     bool find_queue_families(VkPhysicalDevice gpu);
     void query_swap_chain_details(VkPhysicalDevice gpu);
-    SwapChainFormat choose_swap_chain_format();
+    swap_chain_format_t choose_swap_chain_format();
     void create_instance();
     void create_logic_device();
     void create_swap_chain();
-    void create_layout_descriptor();
-    void create_descriptor_pool();
-    void create_descriptor_sets();
-    void create_graphics_pipeline();
-    void alloc_framebuffers();
-    void create_command_pool();
-    void alloc_command_buffers();
-    void create_texture_image();
-    VkShaderModule create_shader_mode(const u_int8_t* bytes, size_t size_in_bytes);
-    void attach_surface();
-    void create_render_pass();
-    void create_sync_objects();
-    void create_buffers();
-    void create_image(uint32_t, uint32_t, VkFormat, VkImageTiling, VkImageUsageFlags, VkMemoryPropertyFlags, VkImage&, VkDeviceMemory&);
-    void create_buffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, VkBuffer&, VkDeviceMemory&);
-    void copy_buffer(VkBuffer /*src*/, VkBuffer /*dst*/, VkDeviceSize /*size*/);
-    void record_command_buffer(VkCommandBuffer /*buffer*/, u_int32_t /*image index*/);
-    void begin_single_time_commands(VkCommandBuffer&);
-    void end_single_time_commands(VkCommandBuffer);
-    uint32_t find_mem_type(uint32_t filter, VkMemoryPropertyFlags properties);
-    void transition_layout(VkImage, VkFormat, VkImageLayout /*old_layout*/, VkImageLayout /*new_layout*/);
-    void copy_image_buffer(VkBuffer /*buffer*/, VkImage /*image*/, uint32_t /*width*/, uint32_t /*height*/);
-    void create_texture_sampler();
-    void update_uniform_buffer();
+    void create_surface();
 public:
     explicit VkContext(ANativeWindow* _window);
     virtual ~VkContext();
-    void present();
+    VkSwapchainKHR get_swap_chain();
+    swap_chain_format_t get_swap_chain_format();
+    VkDevice get_device();
+    VkPhysicalDevice get_physical_device();
+    queue_info_t get_queue_info(const queue_type_t& type);
 };
 
 
